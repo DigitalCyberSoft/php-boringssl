@@ -54,18 +54,25 @@ static int bssl_quic_resolve(const char *host, int port,
     return 0;
 }
 
+/* Buffer and stream limits */
+#define BSSL_QUIC_MAX_BUFFER_SIZE (64 * 1024 * 1024)  /* 64 MiB per buffer */
+#define BSSL_QUIC_MAX_STREAMS     1024                  /* max tracked streams */
+
 /* Receive buffer helpers */
-static void recv_buf_append(bssl_quic_recv_buf *buf,
+static int recv_buf_append(bssl_quic_recv_buf *buf,
         const uint8_t *data, size_t len) {
     size_t needed = buf->len + len;
+    if (needed > BSSL_QUIC_MAX_BUFFER_SIZE) return -1;
     if (needed > buf->cap) {
         size_t newcap = buf->cap ? buf->cap * 2 : 4096;
         while (newcap < needed) newcap *= 2;
+        if (newcap > BSSL_QUIC_MAX_BUFFER_SIZE) newcap = BSSL_QUIC_MAX_BUFFER_SIZE;
         buf->data = erealloc(buf->data, newcap);
         buf->cap = newcap;
     }
     memcpy(buf->data + buf->len, data, len);
     buf->len += len;
+    return 0;
 }
 
 static bssl_quic_stream_entry *find_stream(bssl_quic_conn_obj *qc,
@@ -127,9 +134,14 @@ static int bssl_quic_recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags,
         void *user_data, void *stream_user_data) {
     (void)conn; (void)offset; (void)stream_user_data;
     bssl_quic_conn_obj *qc = user_data;
+    if (qc->stream_count >= BSSL_QUIC_MAX_STREAMS && !find_stream(qc, stream_id)) {
+        return NGTCP2_ERR_CALLBACK_FAILURE;
+    }
     bssl_quic_stream_entry *s = find_or_create_stream(qc, stream_id);
     if (datalen > 0) {
-        recv_buf_append(&s->recv, data, datalen);
+        if (recv_buf_append(&s->recv, data, datalen) != 0) {
+            return NGTCP2_ERR_CALLBACK_FAILURE;
+        }
     }
     if (flags & NGTCP2_STREAM_DATA_FLAG_FIN) {
         s->fin_received = 1;
@@ -316,7 +328,8 @@ static int bssl_quic_process(bssl_quic_conn_obj *qc, double timeout_secs,
         } else if (expiry != UINT64_MAX && expiry <= now) {
             wait_ns = 0;
         }
-        int poll_ms = (int)(wait_ns / 1000000);
+        uint64_t poll_ms_u64 = wait_ns / 1000000;
+        int poll_ms = (poll_ms_u64 > INT_MAX) ? INT_MAX : (int)poll_ms_u64;
         if (poll_ms < 1 && wait_ns > 0) poll_ms = 1;
 
         int ret = poll(&pfd, 1, poll_ms);
@@ -510,6 +523,13 @@ PHP_METHOD(QuicConnection, __construct) {
             zval *entry;
             ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(alpn), entry) {
                 zend_string *proto = zval_get_string(entry);
+                if (ZSTR_LEN(proto) == 0 || ZSTR_LEN(proto) > 255) {
+                    smart_str_free(&alpn_buf);
+                    zend_string_release(proto);
+                    zend_throw_exception(zend_ce_value_error,
+                        "ALPN protocol name must be 1-255 bytes", 0);
+                    RETURN_THROWS();
+                }
                 smart_str_appendc(&alpn_buf, (char)ZSTR_LEN(proto));
                 smart_str_append(&alpn_buf, proto);
                 zend_string_release(proto);
@@ -534,7 +554,10 @@ PHP_METHOD(QuicConnection, __construct) {
     if (options) {
         zval *cs = zend_hash_str_find(Z_ARRVAL_P(options), "ciphersuites", sizeof("ciphersuites") - 1);
         if (cs && Z_TYPE_P(cs) == IS_STRING) {
-            SSL_CTX_set_cipher_list(qc->ssl_ctx, Z_STRVAL_P(cs));
+            if (SSL_CTX_set_cipher_list(qc->ssl_ctx, Z_STRVAL_P(cs)) != 1) {
+                bssl_throw_ssl_error("Failed to set QUIC cipher list");
+                RETURN_THROWS();
+            }
         }
     }
 
@@ -552,6 +575,12 @@ PHP_METHOD(QuicConnection, __construct) {
     SSL_set_connect_state(qc->ssl);
     const char *sni = qc->peer_name ? qc->peer_name : qc->host;
     SSL_set_tlsext_host_name(qc->ssl, sni);
+
+    /* Enforce certificate hostname verification */
+    if (qc->verify_peer) {
+        X509_VERIFY_PARAM *param = SSL_get0_param(qc->ssl);
+        X509_VERIFY_PARAM_set1_host(param, sni, strlen(sni));
+    }
 
     /* conn_ref for ngtcp2 crypto callbacks */
     qc->conn_ref.get_conn = bssl_quic_get_conn;
@@ -597,10 +626,22 @@ PHP_METHOD(QuicConnection, connect) {
     }
 
     qc->local_addrlen = sizeof(qc->local_addr);
-    getsockname(qc->fd, (struct sockaddr *)&qc->local_addr, &qc->local_addrlen);
+    if (getsockname(qc->fd, (struct sockaddr *)&qc->local_addr,
+            &qc->local_addrlen) != 0) {
+        close(qc->fd); qc->fd = -1;
+        zend_throw_exception_ex(spl_ce_RuntimeException, 0,
+            "getsockname failed: %s", strerror(errno));
+        RETURN_THROWS();
+    }
 
     /* Set non-blocking for poll-based event loop */
-    fcntl(qc->fd, F_SETFL, fcntl(qc->fd, F_GETFL) | O_NONBLOCK);
+    int fl = fcntl(qc->fd, F_GETFL);
+    if (fl == -1 || fcntl(qc->fd, F_SETFL, fl | O_NONBLOCK) == -1) {
+        close(qc->fd); qc->fd = -1;
+        zend_throw_exception_ex(spl_ce_RuntimeException, 0,
+            "Failed to set non-blocking mode: %s", strerror(errno));
+        RETURN_THROWS();
+    }
 
     /* --- ngtcp2 connection --- */
     ngtcp2_callbacks callbacks = {
@@ -785,9 +826,15 @@ PHP_METHOD(QuicStream, write) {
     /* Append to write buffer */
     bssl_quic_write_buf *wb = &s->send;
     size_t needed = wb->len + data_len;
+    if (needed > BSSL_QUIC_MAX_BUFFER_SIZE) {
+        zend_throw_exception(spl_ce_RuntimeException,
+            "QUIC stream write buffer limit exceeded", 0);
+        RETURN_THROWS();
+    }
     if (needed > wb->cap) {
         size_t newcap = wb->cap ? wb->cap * 2 : 4096;
         while (newcap < needed) newcap *= 2;
+        if (newcap > BSSL_QUIC_MAX_BUFFER_SIZE) newcap = BSSL_QUIC_MAX_BUFFER_SIZE;
         wb->data = erealloc(wb->data, newcap);
         wb->cap = newcap;
     }
@@ -956,9 +1003,15 @@ PHP_FUNCTION(boringssl_quic_stream_write) {
     bssl_quic_stream_entry *s = sobj->entry;
     bssl_quic_write_buf *wb = &s->send;
     size_t needed = wb->len + data_len;
+    if (needed > BSSL_QUIC_MAX_BUFFER_SIZE) {
+        zend_throw_exception(spl_ce_RuntimeException,
+            "QUIC stream write buffer limit exceeded", 0);
+        RETURN_THROWS();
+    }
     if (needed > wb->cap) {
         size_t nc = wb->cap ? wb->cap * 2 : 4096;
         while (nc < needed) nc *= 2;
+        if (nc > BSSL_QUIC_MAX_BUFFER_SIZE) nc = BSSL_QUIC_MAX_BUFFER_SIZE;
         wb->data = erealloc(wb->data, nc);
         wb->cap = nc;
     }

@@ -965,6 +965,11 @@ PHP_METHOD(Context, setVerifyDepth) {
     ZEND_PARSE_PARAMETERS_END();
     bssl_ctx_obj *obj = Z_BSSL_CTX_P(ZEND_THIS);
     BSSL_CTX_CHECK(obj);
+    if (depth < 0 || depth > 100) {
+        zend_throw_exception(zend_ce_value_error,
+            "Verify depth must be between 0 and 100", 0);
+        RETURN_THROWS();
+    }
     SSL_CTX_set_verify_depth(obj->ctx, (int)depth);
     RETURN_ZVAL(ZEND_THIS, 1, 0);
 }
@@ -976,6 +981,11 @@ PHP_METHOD(Context, setOptions) {
     ZEND_PARSE_PARAMETERS_END();
     bssl_ctx_obj *obj = Z_BSSL_CTX_P(ZEND_THIS);
     BSSL_CTX_CHECK(obj);
+    if (options < 0 || options > UINT32_MAX) {
+        zend_throw_exception(zend_ce_value_error,
+            "Options must be a valid 32-bit unsigned value", 0);
+        RETURN_THROWS();
+    }
     SSL_CTX_set_options(obj->ctx, (uint32_t)options);
     RETURN_ZVAL(ZEND_THIS, 1, 0);
 }
@@ -987,6 +997,11 @@ PHP_METHOD(Context, clearOptions) {
     ZEND_PARSE_PARAMETERS_END();
     bssl_ctx_obj *obj = Z_BSSL_CTX_P(ZEND_THIS);
     BSSL_CTX_CHECK(obj);
+    if (options < 0 || options > UINT32_MAX) {
+        zend_throw_exception(zend_ce_value_error,
+            "Options must be a valid 32-bit unsigned value", 0);
+        RETURN_THROWS();
+    }
     SSL_CTX_clear_options(obj->ctx, (uint32_t)options);
     RETURN_ZVAL(ZEND_THIS, 1, 0);
 }
@@ -1097,6 +1112,10 @@ PHP_METHOD(Context, useCertificateChainPem) {
     ZEND_PARSE_PARAMETERS_END();
     bssl_ctx_obj *obj = Z_BSSL_CTX_P(ZEND_THIS);
     BSSL_CTX_CHECK(obj);
+    if (pem_len > INT_MAX) {
+        zend_throw_exception(zend_ce_value_error, "PEM data too large", 0);
+        RETURN_THROWS();
+    }
     BIO *bio = BIO_new_mem_buf(pem, (int)pem_len);
     if (!bio) {
         bssl_throw_ssl_error("Failed to create BIO");
@@ -1139,6 +1158,10 @@ PHP_METHOD(Context, usePrivateKeyPem) {
     ZEND_PARSE_PARAMETERS_END();
     bssl_ctx_obj *obj = Z_BSSL_CTX_P(ZEND_THIS);
     BSSL_CTX_CHECK(obj);
+    if (pem_len > INT_MAX) {
+        zend_throw_exception(zend_ce_value_error, "PEM data too large", 0);
+        RETURN_THROWS();
+    }
     BIO *bio = BIO_new_mem_buf(pem, (int)pem_len);
     if (!bio) {
         bssl_throw_ssl_error("Failed to create BIO");
@@ -1650,6 +1673,12 @@ PHP_METHOD(Connection, setHostname) {
         bssl_throw_ssl_error("Failed to set hostname (SNI)");
         RETURN_THROWS();
     }
+    /* Enforce certificate hostname verification */
+    X509_VERIFY_PARAM *param = SSL_get0_param(obj->ssl);
+    if (!X509_VERIFY_PARAM_set1_host(param, hostname, hostname_len)) {
+        bssl_throw_ssl_error("Failed to set hostname verification");
+        RETURN_THROWS();
+    }
     RETURN_ZVAL(ZEND_THIS, 1, 0);
 }
 
@@ -1823,6 +1852,11 @@ PHP_METHOD(Connection, setRenegotiateMode) {
     ZEND_PARSE_PARAMETERS_END();
     bssl_conn_obj *obj = Z_BSSL_CONN_P(ZEND_THIS);
     BSSL_CONN_CHECK(obj);
+    if (mode < ssl_renegotiate_never || mode > ssl_renegotiate_explicit) {
+        zend_throw_exception(zend_ce_value_error,
+            "Invalid renegotiate mode", 0);
+        RETURN_THROWS();
+    }
     SSL_set_renegotiate_mode(obj->ssl, (enum ssl_renegotiate_mode_t)mode);
     RETURN_ZVAL(ZEND_THIS, 1, 0);
 }
@@ -2365,6 +2399,10 @@ PHP_FUNCTION(boringssl_context_set_verify_depth) {
         Z_PARAM_OBJECT_OF_CLASS(ctx_zv, bssl_ctx_ce) Z_PARAM_LONG(depth)
     ZEND_PARSE_PARAMETERS_END();
     bssl_ctx_obj *obj = Z_BSSL_CTX_P(ctx_zv); BSSL_CTX_CHECK(obj);
+    if (depth < 0 || depth > 100) {
+        zend_throw_exception(zend_ce_value_error, "Verify depth must be between 0 and 100", 0);
+        RETURN_THROWS();
+    }
     SSL_CTX_set_verify_depth(obj->ctx, (int)depth);
     RETURN_TRUE;
 }
@@ -2375,6 +2413,10 @@ PHP_FUNCTION(boringssl_context_set_options) {
         Z_PARAM_OBJECT_OF_CLASS(ctx_zv, bssl_ctx_ce) Z_PARAM_LONG(options)
     ZEND_PARSE_PARAMETERS_END();
     bssl_ctx_obj *obj = Z_BSSL_CTX_P(ctx_zv); BSSL_CTX_CHECK(obj);
+    if (options < 0 || options > UINT32_MAX) {
+        zend_throw_exception(zend_ce_value_error, "Options must be a valid 32-bit unsigned value", 0);
+        RETURN_THROWS();
+    }
     SSL_CTX_set_options(obj->ctx, (uint32_t)options);
     RETURN_TRUE;
 }
@@ -2385,6 +2427,10 @@ PHP_FUNCTION(boringssl_context_clear_options) {
         Z_PARAM_OBJECT_OF_CLASS(ctx_zv, bssl_ctx_ce) Z_PARAM_LONG(options)
     ZEND_PARSE_PARAMETERS_END();
     bssl_ctx_obj *obj = Z_BSSL_CTX_P(ctx_zv); BSSL_CTX_CHECK(obj);
+    if (options < 0 || options > UINT32_MAX) {
+        zend_throw_exception(zend_ce_value_error, "Options must be a valid 32-bit unsigned value", 0);
+        RETURN_THROWS();
+    }
     SSL_CTX_clear_options(obj->ctx, (uint32_t)options);
     RETURN_TRUE;
 }
@@ -2692,6 +2738,11 @@ PHP_FUNCTION(boringssl_set_hostname) {
     if (!SSL_set_tlsext_host_name(obj->ssl, hostname)) {
         bssl_throw_ssl_error("Failed to set hostname (SNI)"); RETURN_THROWS();
     }
+    /* Enforce certificate hostname verification */
+    X509_VERIFY_PARAM *param = SSL_get0_param(obj->ssl);
+    if (!X509_VERIFY_PARAM_set1_host(param, hostname, hostname_len)) {
+        bssl_throw_ssl_error("Failed to set hostname verification"); RETURN_THROWS();
+    }
     RETURN_TRUE;
 }
 
@@ -2822,6 +2873,10 @@ PHP_FUNCTION(boringssl_set_renegotiate_mode) {
         Z_PARAM_OBJECT_OF_CLASS(conn_zv, bssl_conn_ce) Z_PARAM_LONG(mode)
     ZEND_PARSE_PARAMETERS_END();
     bssl_conn_obj *obj = Z_BSSL_CONN_P(conn_zv); BSSL_CONN_CHECK(obj);
+    if (mode < ssl_renegotiate_never || mode > ssl_renegotiate_explicit) {
+        zend_throw_exception(zend_ce_value_error, "Invalid renegotiate mode", 0);
+        RETURN_THROWS();
+    }
     SSL_set_renegotiate_mode(obj->ssl, (enum ssl_renegotiate_mode_t)mode);
     RETURN_TRUE;
 }
