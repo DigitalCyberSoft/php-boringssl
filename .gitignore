@@ -1,0 +1,36 @@
+# Build artifacts
+*.lo
+*.la
+*.o
+*.dep
+*.so
+.libs/
+modules/
+autom4te.cache/
+config.h
+config.h.in
+config.h.in~
+config.log
+config.nice
+config.status
+configure
+configure~
+libtool
+Makefile
+Makefile.fragments
+Makefile.objects
+run-tests.php
+tmp-php.ini
+tests/*.diff
+tests/*.exp
+tests/*.log
+tests/*.out
+tests/*.php
+tests/*.sh
+tests/*.mem
+
+# Dependencies (built from source)
+deps/
+
+# State
+.state/
